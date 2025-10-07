@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 方塊跑酷</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #87ceeb; /* 天空藍 */
+            font-family: 'Inter', 'Noto Sans TC', sans-serif;
+        }
+        #game-canvas {
+            display: block;
+        }
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            pointer-events: none; /* 讓滑鼠事件穿透 UI */
+        }
+        .score {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            font-size: 2rem;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.7);
+        }
+        .game-over-screen {
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 40px;
+            border-radius: 20px;
+            text-align: center;
+            display: none; /* 預設隱藏 */
+            flex-direction: column;
+            gap: 20px;
+            pointer-events: auto; /* 讓遊戲結束畫面可以點擊 */
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        }
+        .game-over-screen h1 {
+            font-size: 3rem;
+            margin: 0;
+            font-weight: 900;
+            color: #ef4444; /* 紅色 */
+        }
+        .game-over-screen p {
+            font-size: 1.5rem;
+            margin: 0;
+        }
+        #restart-button {
+            padding: 12px 24px;
+            font-size: 1.2rem;
+            background-color: #3b82f6; /* 藍色 */
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.1s ease;
+            font-weight: bold;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        }
+        #restart-button:hover {
+            background-color: #2563eb;
+        }
+        #restart-button:active {
+            transform: scale(0.95);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="game-canvas"></canvas>
+    <div id="ui-container">
+        <div id="score" class="score">分數: 0</div>
+        <div id="game-over" class="game-over-screen">
+            <h1>遊戲結束</h1>
+            <p id="final-score">你的分數是: 0</p>
+            <button id="restart-button">重新開始</button>
+        </div>
+    </div>
+
+    <script>
+        // --- 核心變數 ---
+        let scene, camera, renderer, player, clock, sun;
+        let obstacles = [];
+        let sceneryObjects = []; // 包含地形方塊和樹木
+        let gameSpeed = 5;
+        let initialGameSpeed = 5;
+        let maxGameSpeed = 20;
+        let speedIncrement = 0.001;
+        let score = 0;
+        let isGameOver = false;
+
+        const objectTypes = {
+            JUMP_OBSTACLE: 'jump_obstacle',
+            WALL_OBSTACLE: 'wall_obstacle',
+            COIN: 'coin'
+        };
+
+        const playerSize = 1;
+        const gravity = -20;
+        const jumpForce = 12;
+        let playerVelocityY = 0;
+        let isOnGround = true;
+        const lanes = [-2, 0, 2];
+        let currentLane = 1;
+        
+        const worldDepth = 50;
+        const worldWidth = 20;
+
+        // --- 材質生成函式 ---
+        function createPixelTexture(drawFunc) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 16;
+            canvas.height = 16;
+            const context = canvas.getContext('2d');
+            drawFunc(context);
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return texture;
+        }
+
+        const textures = {
+            grassTop: createPixelTexture(ctx => {
+                ctx.fillStyle = '#6a9b4a'; ctx.fillRect(0, 0, 16, 16);
+                ctx.fillStyle = 'rgba(0,0,0,0.1)';
+                for(let i=0; i<20; i++) ctx.fillRect(Math.random()*16, Math.random()*16, 1, 1);
+            }),
+            dirt: createPixelTexture(ctx => {
+                ctx.fillStyle = '#966c4a'; ctx.fillRect(0, 0, 16, 16);
+                ctx.fillStyle = 'rgba(0,0,0,0.1)';
+                for(let i=0; i<20; i++) ctx.fillRect(Math.random()*16, Math.random()*16, 1, 1);
+            }),
+            stone: createPixelTexture(ctx => {
+                ctx.fillStyle = '#808080'; ctx.fillRect(0, 0, 16, 16);
+                ctx.fillStyle = 'rgba(0,0,0,0.1)';
+                for(let i=0; i<20; i++) ctx.fillRect(Math.random()*16, Math.random()*16, 1, 1);
+            }),
+            gold: createPixelTexture(ctx => {
+                ctx.fillStyle = '#ffd700'; ctx.fillRect(0, 0, 16, 16);
+                ctx.fillStyle = '#f0c400'; ctx.fillRect(2, 2, 12, 12);
+            }),
+            leaves: createPixelTexture(ctx => {
+                ctx.fillStyle = '#3a853a'; ctx.fillRect(0, 0, 16, 16);
+                ctx.fillStyle = 'rgba(0,0,0,0.2)';
+                for(let i=0; i<25; i++) ctx.fillRect(Math.random()*16, Math.random()*16, 2, 2);
+            }),
+            wood: createPixelTexture(ctx => {
+                ctx.fillStyle = '#664028'; ctx.fillRect(0, 0, 16, 16);
+                ctx.fillStyle = 'rgba(0,0,0,0.2)';
+                ctx.fillRect(0,0,16,2); ctx.fillRect(0,4,16,2); ctx.fillRect(0,8,16,2); ctx.fillRect(0,12,16,2);
+            }),
+            playerFace: createPixelTexture(ctx => {
+                 ctx.fillStyle = '#fbe0cc'; ctx.fillRect(0, 0, 16, 16);
+                 ctx.fillStyle = '#5a3825'; ctx.fillRect(3, 5, 2, 2); ctx.fillRect(11, 5, 2, 2);
+                 ctx.fillStyle = '#966c4a'; ctx.fillRect(5, 10, 6, 2);
+            }),
+        };
+        
+        const materials = {
+            grass: [
+                new THREE.MeshLambertMaterial({ map: textures.dirt }), new THREE.MeshLambertMaterial({ map: textures.dirt }),
+                new THREE.MeshLambertMaterial({ map: textures.grassTop }), new THREE.MeshLambertMaterial({ map: textures.dirt }),
+                new THREE.MeshLambertMaterial({ map: textures.dirt }), new THREE.MeshLambertMaterial({ map: textures.dirt }),
+            ],
+            stone: new THREE.MeshLambertMaterial({ map: textures.stone }),
+            dirt: new THREE.MeshLambertMaterial({ map: textures.dirt }),
+            gold: new THREE.MeshLambertMaterial({ map: textures.gold }),
+            leaves: new THREE.MeshLambertMaterial({ map: textures.leaves }),
+            wood: new THREE.MeshLambertMaterial({ map: textures.wood }),
+            player: [
+                 new THREE.MeshLambertMaterial({ map: textures.dirt }), new THREE.MeshLambertMaterial({ map: textures.dirt }),
+                 new THREE.MeshLambertMaterial({ map: textures.dirt }), new THREE.MeshLambertMaterial({ map: textures.dirt }),
+                 new THREE.MeshLambertMaterial({ map: textures.playerFace }), new THREE.MeshLambertMaterial({ map: textures.dirt }),
+            ]
+        }
+
+        // --- 初始化函式 ---
+        function init() {
+            scene = new THREE.Scene();
+            const skyColor = 0x87ceeb;
+            scene.background = new THREE.Color(skyColor);
+            scene.fog = new THREE.Fog(skyColor, 50, 150); // 霧化效果
+            clock = new THREE.Clock();
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 4, 8);
+            
+            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('game-canvas'), antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(50, 50, 25);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            scene.add(directionalLight);
+            
+            // 太陽
+            const sunGeometry = new THREE.SphereGeometry(10, 32, 32);
+            const sunMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+            sun = new THREE.Mesh(sunGeometry, sunMaterial);
+            sun.position.set(100, 100, -100);
+            scene.add(sun);
+
+
+            // 玩家
+            const playerGeometry = new THREE.BoxGeometry(playerSize, playerSize, playerSize);
+            player = new THREE.Mesh(playerGeometry, materials.player);
+            player.castShadow = true;
+            player.position.y = playerSize / 2;
+            scene.add(player);
+            camera.lookAt(player.position);
+
+            // 地形
+            for (let x = -worldWidth; x <= worldWidth; x++) {
+                for (let z = -worldDepth; z < 5; z++) {
+                    createSceneryBlock(x * 2, z * 2, true);
+                }
+            }
+
+            window.addEventListener('resize', onWindowResize, false);
+            document.addEventListener('keydown', onKeyDown, false);
+            document.getElementById('restart-button').addEventListener('click', restartGame);
+
+            for (let i = 0; i < 15; i++) {
+                spawnObject(-i * 12);
+            }
+
+            animate();
+        }
+
+        function getTerrainHeight(x, z) {
+            return (Math.sin(x * 0.05) + Math.cos(z * 0.05)) * 2.5;
+        }
+        
+        function createSceneryBlock(x, z, isInitial) {
+            // 中心跑道區域保持平坦
+            if (x >= -4 && x <= 4) {
+                 const pathBlock = new THREE.Mesh(new THREE.BoxGeometry(2, 1, 2), materials.grass);
+                 pathBlock.position.set(x, -0.5, z);
+                 pathBlock.receiveShadow = true;
+                 sceneryObjects.push(pathBlock);
+                 scene.add(pathBlock);
+                 return;
+            }
+            
+            const y = getTerrainHeight(x, z);
+            const block = new THREE.Mesh(new THREE.BoxGeometry(2, 1, 2), materials.grass);
+            block.position.set(x, y - 0.5, z);
+            block.receiveShadow = true;
+            sceneryObjects.push(block);
+            scene.add(block);
+            
+            // 隨機生成樹木
+            if (Math.random() > 0.95 && y > 0) {
+                 createTree(x, y + 0.5, z);
+            }
+        }
+        
+        function createTree(x, y, z) {
+             const tree = new THREE.Group();
+             const trunkHeight = Math.random() * 2 + 3;
+             const trunk = new THREE.Mesh(new THREE.BoxGeometry(1, trunkHeight, 1), materials.wood);
+             trunk.castShadow = true;
+             trunk.position.y = trunkHeight / 2;
+
+             const leafSize = 3;
+             const leaves = new THREE.Mesh(new THREE.BoxGeometry(leafSize, leafSize, leafSize), materials.leaves);
+             leaves.castShadow = true;
+             leaves.position.y = trunkHeight;
+             
+             tree.add(trunk);
+             tree.add(leaves);
+             tree.position.set(x, y, z);
+             sceneryObjects.push(tree);
+             scene.add(tree);
+        }
+
+        function spawnObject(zPos) {
+            let object;
+            const randomLane = Math.floor(Math.random() * 3);
+            const objectTypeRoll = Math.random();
+            const geometry = new THREE.BoxGeometry(1, 1, 1);
+
+            if (objectTypeRoll > 0.7) {
+                object = new THREE.Mesh(geometry, materials.gold);
+                object.position.set(lanes[randomLane], 1.5, zPos);
+                object.userData.type = objectTypes.COIN;
+            } else if (objectTypeRoll > 0.4) {
+                object = new THREE.Mesh(new THREE.BoxGeometry(1, 3, 1), materials.stone);
+                object.position.set(lanes[randomLane], 1.5, zPos);
+                object.userData.type = objectTypes.WALL_OBSTACLE;
+            } else {
+                object = new THREE.Mesh(geometry, materials.dirt);
+                object.position.set(lanes[randomLane], 0.5, zPos);
+                object.userData.type = objectTypes.JUMP_OBSTACLE;
+            }
+            
+            object.castShadow = true;
+            obstacles.push(object);
+            scene.add(object);
+        }
+
+        function animate() {
+            if (isGameOver) return;
+
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+
+            if (gameSpeed < maxGameSpeed) gameSpeed += speedIncrement;
+            
+            score += Math.round(gameSpeed * delta * 10);
+            document.getElementById('score').innerText = `分數: ${score}`;
+
+            // 移動物件
+            [...obstacles, ...sceneryObjects].forEach(obj => {
+                obj.position.z += gameSpeed * delta;
+            });
+            
+            // 回收地形
+            const recycleDistance = camera.position.z + 10;
+            const newZPos = sceneryObjects[sceneryObjects.length - 1].position.z - 2;
+            
+            for (let i = sceneryObjects.length - 1; i >= 0; i--) {
+                const obj = sceneryObjects[i];
+                if (obj.position.z > recycleDistance) {
+                    scene.remove(obj);
+                    sceneryObjects.splice(i, 1);
+                     
+                    if (obj.isMesh && obj.geometry.parameters.width === 2) { // 這是地形方塊
+                        createSceneryBlock(obj.position.x, obj.position.z - (worldDepth * 2) - 10, false);
+                    } else if (obj.isGroup) { // 這是樹
+                        // 樹會跟著地形方塊一起被重新生成
+                    }
+                }
+            }
+
+
+            // 回收障礙物和金幣
+            obstacles.forEach(obstacle => {
+                 if (obstacle.userData.type === objectTypes.COIN) {
+                    obstacle.rotation.y += 5 * delta;
+                    obstacle.rotation.x += 5 * delta;
+                }
+                if (obstacle.position.z > camera.position.z) {
+                    scene.remove(obstacle);
+                    const index = obstacles.indexOf(obstacle);
+                    if (index > -1) obstacles.splice(index, 1);
+                    spawnObject(obstacle.position.z - 15 * 12);
+                }
+            });
+
+            // 玩家動畫與物理更新
+            player.position.x = THREE.MathUtils.lerp(player.position.x, lanes[currentLane], 0.2);
+            if (isOnGround) {
+                player.position.y = (playerSize / 2) + Math.sin(clock.getElapsedTime() * gameSpeed * 1.8) * 0.08;
+                player.scale.lerp(new THREE.Vector3(1, 1, 1), 0.2);
+            } else {
+                playerVelocityY += gravity * delta;
+                player.position.y += playerVelocityY * delta;
+                player.scale.lerp(new THREE.Vector3(0.9, 1.1, 0.9), 0.1);
+            }
+            if (player.position.y <= playerSize / 2 && !isOnGround) {
+                player.position.y = playerSize / 2;
+                playerVelocityY = 0;
+                isOnGround = true;
+                player.scale.set(1.3, 0.7, 1.3);
+            }
+
+            // 碰撞檢測
+            const playerBox = new THREE.Box3().setFromObject(player);
+            obstacles.forEach(obstacle => {
+                const obstacleBox = new THREE.Box3().setFromObject(obstacle);
+                if (playerBox.intersectsBox(obstacleBox)) {
+                    switch(obstacle.userData.type) {
+                        case objectTypes.JUMP_OBSTACLE: case objectTypes.WALL_OBSTACLE:
+                            gameOver();
+                            break;
+                        case objectTypes.COIN:
+                            score += 100;
+                            document.getElementById('score').innerText = `分數: ${score}`;
+                            obstacle.position.y = -1000; 
+                            break;
+                    }
+                }
+            });
+
+            const targetCameraPosition = new THREE.Vector3(player.position.x, camera.position.y, player.position.z + 8);
+            camera.position.lerp(targetCameraPosition, 0.1);
+            camera.lookAt(player.position.x, player.position.y, player.position.z);
+
+            renderer.render(scene, camera);
+        }
+        
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function onKeyDown(event) {
+            if (isGameOver) return;
+            switch (event.code) {
+                case 'ArrowLeft': case 'KeyA': if (currentLane > 0) currentLane--; break;
+                case 'ArrowRight': case 'KeyD': if (currentLane < lanes.length - 1) currentLane++; break;
+                case 'Space': case 'ArrowUp': case 'KeyW':
+                    if (isOnGround) { isOnGround = false; playerVelocityY = jumpForce; }
+                    break;
+            }
+        }
+        
+        function gameOver() {
+            isGameOver = true;
+            document.getElementById('final-score').innerText = `你的分數是: ${score}`;
+            document.getElementById('game-over').style.display = 'flex';
+        }
+
+        function restartGame() {
+            isGameOver = false;
+            score = 0;
+            gameSpeed = initialGameSpeed;
+            currentLane = 1;
+            player.position.set(0, playerSize / 2, 0);
+            
+            [...obstacles, ...sceneryObjects].forEach(obj => scene.remove(obj));
+            obstacles = [];
+            sceneryObjects = [];
+            
+            for (let x = -worldWidth; x <= worldWidth; x++) {
+                for (let z = -worldDepth; z < 5; z++) {
+                    createSceneryBlock(x * 2, z * 2, true);
+                }
+            }
+
+            for (let i = 0; i < 15; i++) {
+                spawnObject(-i * 12 - 20);
+            }
+
+            document.getElementById('game-over').style.display = 'none';
+            animate();
+        }
+
+        init();
+    </script>
+</body>
+</html>
+
